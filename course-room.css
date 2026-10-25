@@ -293,3 +293,39 @@ body.course-book-open{overflow:hidden}
   .course-room .course-hero { background-position:62% center; }
   .course-room .course-hero-copy { padding:18px; }
 }
+
+/* Аккуратный мобильный первый экран и отдельный режим чтения. */
+.course-room .course-hero-copy { box-sizing:border-box; min-width:0; width:min(100%,760px); }
+.course-room .course-hero .course-display-title { max-width:100%; font-size:clamp(3.5rem,6.5vw,7rem); line-height:.88; overflow-wrap:anywhere; text-wrap:balance; }
+body.course-book-open { background:#EEEDE9; }
+body.course-book-open .account-header,
+body.course-book-open .account-footer,
+body.course-book-open .course-room .course-hero { display:none!important; }
+.course-room .course-reader.is-reading { height:100vh; height:100dvh; }
+.course-room .course-book-stage.is-zoomed { display:block; overflow:auto; overscroll-behavior:contain; touch-action:auto; }
+.course-room .course-book-sheet.is-zoomed { flex:none; max-width:none; aspect-ratio:auto; }
+.course-room .course-book-zoom { display:flex; align-items:center; justify-content:center; gap:14px; margin:6px auto 0; color:var(--rd-ink); }
+.course-room .course-book-zoom button { width:42px; height:42px; border:1px solid var(--rd-line); background:#fff; color:var(--rd-ink); cursor:pointer; font-size:1.35rem; line-height:1; }
+.course-room .course-book-zoom button:hover:not(:disabled) { border-color:var(--rd-rose); color:var(--rd-rose-deep); }
+.course-room .course-book-zoom button:disabled { opacity:.35; cursor:default; }
+.course-room .course-book-zoom span { min-width:4ch; text-align:center; font-size:.8rem; font-variant-numeric:tabular-nums; }
+@media(max-width:800px) {
+  .course-room .course-hero-copy { flex:0 1 auto; max-width:100%; padding:clamp(16px,4vw,24px); }
+  .course-room .course-hero .course-display-title { font-size:clamp(2.25rem,11vw,5rem); line-height:.9; letter-spacing:-.055em; }
+}
+@media(max-width:700px) {
+  .course-room .course-book-stage.is-zoomed { height:min(64dvh,650px); min-height:320px; max-height:none; padding:0; }
+  .course-room .course-book-sheet.is-zoomed { height:auto; }
+  .course-room .course-reader.is-reading { padding-bottom:max(32px,env(safe-area-inset-bottom)); }
+}
+
+@media(max-width:420px) {
+  body.account-body:has(.course-room) .account-header { flex-wrap:wrap; gap:8px 16px; }
+  body.account-body:has(.course-room) .account-nav { flex-wrap:wrap; gap:8px 14px; }
+}
+
+@media(min-width:801px) and (max-width:1024px) {
+  .course-room .course-hero { flex-direction:column; align-items:stretch; justify-content:flex-end; min-height:720px; }
+  .course-room .course-hero-copy { flex:0 1 auto; max-width:100%; }
+  .course-room .course-progress-card { width:min(100%,480px); }
+}
