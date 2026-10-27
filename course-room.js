@@ -1,319 +1,383 @@
-// Прогресс, последний модуль и личные заметки сохраняются в localStorage отдельно для каждого аккаунта.
+// Прогресс и конспект остаются в этом браузере отдельно для каждого аккаунта.
 (() => {
+  'use strict';
   const root = document.getElementById('courseRoom');
   if (!root) return;
-  const userId = 'preview';
-  const storageKey = 'paradisi-course-progress-v1-' + userId;
+  document.body.classList.add('has-course-room');
   const modules = JSON.parse(root.dataset.modules || '[]');
-  let state = { completed: [], notes: {}, last: modules[0].slug, started: [] };
-  try { const saved = JSON.parse(localStorage.getItem(storageKey) || 'null'); if (saved && typeof saved === 'object') state = {...state, ...saved}; } catch (error) { /* Если хранилище недоступно, страница всё равно остаётся рабочей. */ }
-  // Старые или повреждённые данные браузера не должны ломать страницу курса.
-  const knownSlugs = new Set(modules.map((module) => module.slug));
-  state.completed = Array.isArray(state.completed) ? state.completed.filter((slug) => knownSlugs.has(slug)) : [];
-  state.started = Array.isArray(state.started) ? state.started.filter((slug) => knownSlugs.has(slug)) : [];
-  state.notes = state.notes && typeof state.notes === 'object' && !Array.isArray(state.notes) ? state.notes : {};
-  state.last = knownSlugs.has(state.last) ? state.last : (modules[0] && modules[0].slug);
+  if (!modules.length) return;
   const byId = (id) => document.getElementById(id);
-  const save = () => { try { localStorage.setItem(storageKey, JSON.stringify(state)); } catch (error) { /* Не прерываем изучение, если браузер запретил сохранение. */ } };
-  let active = null;
-  let libraryScrollY = 0; // позиция списка модулей, чтобы вернуться на то же место
-  let noteTimer = null;
-  let pdfDocument = null;
-  let pdfPageNumber = 1;
-  const setText = (id, text) => { const el = byId(id); if (el) el.textContent = text; };
-  const reducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  state.pages = (state.pages && typeof state.pages === 'object') ? state.pages : {};
+  const storageKey = 'paradisi-course-progress-v1-' + (root.dataset.user || 'guest');
+  let state = { completed: [], notes: {}, last: modules[0].slug, started: [], pages: {} };
+  try {
+    const saved = JSON.parse(localStorage.getItem(storageKey) || 'null');
+    if (saved && typeof saved === 'object') state = { ...state, ...saved };
+  } catch (_) { /* Чтение остаётся доступным без хранилища. */ }
+  const slugs = new Set(modules.map((module) => module.slug));
+  for (const key of ['completed', 'started']) state[key] = [...new Set(Array.isArray(state[key]) ? state[key].filter((slug) => slugs.has(slug)) : [])];
+  for (const key of ['notes', 'pages']) if (!state[key] || typeof state[key] !== 'object' || Array.isArray(state[key])) state[key] = {};
+  state.last = slugs.has(state.last) ? state.last : modules[0].slug;
+  function save() {
+    try { localStorage.setItem(storageKey, JSON.stringify(state)); return true; }
+    catch (_) { return false; }
+  }
+  const setText = (id, text) => { byId(id).textContent = text; };
+  const motionPreference = window.matchMedia('(prefers-reduced-motion: reduce)');
   const isDone = (slug) => state.completed.includes(slug);
-  const isStarted = (slug) => state.started.includes(slug) && !isDone(slug);
-  const statusText = (slug) => isDone(slug) ? 'Пройден' : isStarted(slug) ? 'В работе' : 'Не начат';
+  const statusText = (slug) => isDone(slug) ? 'Пройден' : state.started.includes(slug) ? 'В работе' : 'Не начат';
   function renderProgress() {
     const count = state.completed.length;
     const percent = Math.round(count / modules.length * 100);
-    byId('coursePercent').textContent = percent + '%';
-    byId('courseProgressText').textContent = `Пройдено ${count} из ${modules.length} модулей · ${percent}%`;
+    setText('coursePercent', percent + '%');
+    setText('courseProgressText', `Пройдено ${count} из ${modules.length} модулей · ${percent}%`);
     byId('courseProgressFill').style.width = percent + '%';
     byId('courseProgressBar').setAttribute('aria-valuenow', String(count));
-    document.querySelectorAll('[data-status]').forEach((el) => { const slug = el.dataset.status; el.textContent = statusText(slug); el.className = 'course-card-status' + (isDone(slug) ? ' is-done' : isStarted(slug) ? ' is-started' : ''); });
-    byId('courseProgressList').innerHTML = modules.map((m) => `<div class="course-progress-item"><div><span>${m.number}</span><strong>${m.title}</strong><em>${statusText(m.slug)}</em></div><div class="course-mini-track"><span style="width:${isDone(m.slug) ? 100 : isStarted(m.slug) ? 45 : 0}%"></span></div></div>`).join('');
+    document.querySelectorAll('[data-status]').forEach((el) => {
+      const slug = el.dataset.status;
+      el.textContent = statusText(slug);
+      el.className = 'course-card-status' + (isDone(slug) ? ' is-done' : state.started.includes(slug) ? ' is-started' : '');
+    });
+    const list = byId('courseProgressList');
+    list.replaceChildren();
+    for (const module of modules) {
+      const item = document.createElement('div');
+      item.className = 'course-progress-item';
+      const row = document.createElement('div');
+      for (const [tag, text] of [['span', module.number], ['strong', module.title], ['em', statusText(module.slug)]]) {
+        const el = document.createElement(tag); el.textContent = text; row.append(el);
+      }
+      const track = document.createElement('div'); track.className = 'course-mini-track';
+      const fill = document.createElement('span');
+      fill.style.width = (isDone(module.slug) ? 100 : state.started.includes(module.slug) ? 45 : 0) + '%';
+      track.append(fill); item.append(row, track); list.append(item);
+    }
     byId('courseCompletionMessage').hidden = percent !== 100;
   }
-  function renderNav() {
-    if (!byId('readerNav')) return; // боковой панели в режиме чтения больше нет
-    byId('readerNav').innerHTML = modules.map((m) => `<button type="button" data-open-module="${m.slug}" class="course-reader-nav-item${active && active.slug === m.slug ? ' is-active' : ''}"><span>${m.number}</span><span>${m.title}</span><i aria-label="${isDone(m.slug) ? 'Пройден' : statusText(m.slug)}">${isDone(m.slug) ? '✓' : '○'}</i></button>`).join('');
-  }
-  /* ===== Книжный просмотр: всегда одна страница PDF, перелистывание через два canvas ===== */
+
+  const reader = byId('courseReader');
   const stage = byId('bookStage');
   const sheet = byId('bookSheet');
+  const effect = byId('bookTurnCanvas');
+  const motion = window.ParadisiBookMotion;
   const zoomLevels = [1, 1.5, 2, 2.5];
+  let front = byId('bookCanvasA');
+  let back = byId('bookCanvasB');
+  let active = null;
+  let pdfDocument = null;
+  let loadingTask = null;
+  let pageNumber = 1;
   let zoomIndex = 0;
-  const zoomToolbar = document.createElement('div');
-  zoomToolbar.className = 'course-book-zoom';
-  zoomToolbar.setAttribute('aria-label', 'Масштаб страницы PDF');
-  zoomToolbar.innerHTML = '<button type="button" id="bookZoomOut" aria-label="Уменьшить PDF">−</button><span id="bookZoomValue" aria-live="polite">100%</span><button type="button" id="bookZoomIn" aria-label="Увеличить PDF">+</button>';
-  byId('courseBook').querySelector('.course-book-controls').after(zoomToolbar);
-  let front = byId('bookCanvasA');   // сейчас на экране
-  let back = byId('bookCanvasB');    // страница, которая готовится / приходит
-  let busy = false;                  // идёт загрузка или перелистывание — новые команды игнорируются
-  let loadToken = 0;                 // защита от устаревших асинхронных результатов
+  let busy = false;
+  let loadToken = 0;
+  let layoutVersion = 0;
   let resizePending = false;
   let currentUrl = '';
+  let lastRequest = null;
+  let lastTrigger = null;
+  let libraryScrollY = 0;
+  let noteTimer;
+  let resizeTimer;
+  let warmTimer;
+  let stopAnimation = null;
+  const cache = new Map();
+  const renderTasks = new Set();
+  const total = () => pdfDocument ? pdfDocument.numPages : 0;
+  const compact = () => window.matchMedia('(max-width: 900px), (max-height: 500px)').matches;
   const pad = (n) => String(n).padStart(2, '0');
-  const total = () => (pdfDocument ? pdfDocument.numPages : 0);
 
   function updateControls() {
     const count = total();
-    byId('bookPrev').disabled = busy || !count || pdfPageNumber <= 1;
-    byId('bookNext').disabled = busy || !count || pdfPageNumber >= count;
-    byId('bookCounter').textContent = count ? `${pad(pdfPageNumber)} / ${pad(count)}` : '— / —';
-    byId('bookProgressFill').style.width = count ? (pdfPageNumber / count * 100) + '%' : '0%';
-    stage.setAttribute('aria-busy', busy ? 'true' : 'false');
+    byId('bookPrev').disabled = busy || !count || pageNumber <= 1;
+    byId('bookNext').disabled = busy || !count || pageNumber >= count;
     byId('bookZoomOut').disabled = busy || !count || zoomIndex === 0;
     byId('bookZoomIn').disabled = busy || !count || zoomIndex === zoomLevels.length - 1;
-    byId('bookZoomValue').textContent = Math.round(zoomLevels[zoomIndex] * 100) + '%';
+    setText('bookZoomValue', Math.round(zoomLevels[zoomIndex] * 100) + '%');
+    setText('bookCounter', count ? `${pad(pageNumber)} / ${pad(count)}` : '— / —');
+    byId('bookProgressFill').style.width = count ? (pageNumber / count * 100) + '%' : '0%';
+    stage.setAttribute('aria-busy', String(busy));
   }
-  function setStatus(text, canRetry) {
-    byId('bookStatus').textContent = text || '';
-    byId('bookRetry').hidden = !canRetry;
+  function setStatus(text, retry = false) {
+    setText('bookStatus', text);
+    byId('bookRetry').hidden = !retry;
   }
-  async function drawPage(canvas, pageNumber, doc) {
-    const page = await doc.getPage(pageNumber);
-    const base = page.getViewport({ scale: 1 });
-    sheet.style.setProperty('--page-ratio', (base.width / base.height).toFixed(4));
-    const narrow = window.matchMedia('(max-width: 700px)').matches;
-    const fitWidth = Math.max(160, stage.clientWidth);
-    const fitHeight = narrow ? Infinity : Math.max(160, stage.clientHeight - 32);
-    const fitScale = Math.min(fitWidth / base.width, fitHeight / base.height);
-    const viewport = page.getViewport({ scale: fitScale * zoomLevels[zoomIndex] });
-    const enlarged = zoomIndex > 0;
-    stage.classList.toggle('is-zoomed', enlarged);
-    sheet.classList.toggle('is-zoomed', enlarged);
-    sheet.style.width = enlarged ? Math.ceil(viewport.width) + 'px' : '';
-    sheet.style.height = enlarged ? Math.ceil(viewport.height) + 'px' : '';
-    const ratio = Math.min(window.devicePixelRatio || 1, 2, 4096 / Math.max(viewport.width, viewport.height));
-    canvas.width = Math.floor(viewport.width * ratio);
-    canvas.height = Math.floor(viewport.height * ratio);
-    canvas.style.width = Math.floor(viewport.width) + 'px';
-    canvas.style.height = Math.floor(viewport.height) + 'px';
-    const context = canvas.getContext('2d', { alpha: false });
-    context.setTransform(ratio, 0, 0, ratio, 0, 0);
-    await page.render({ canvasContext: context, viewport }).promise;
-  }
-  function releaseCanvas(canvas) {
-    canvas.getAnimations().forEach((animation) => animation.cancel());
+  function clearCanvas(canvas) {
     canvas.hidden = true;
-    canvas.style.zIndex = '';
-    canvas.width = 1;
-    canvas.height = 1;
+    canvas.width = canvas.height = 1;
   }
-  async function flip(direction) {
-    const outgoing = front;
-    const incoming = back;
-    const token = loadToken;
-    incoming.hidden = false;
-    if (!direction || reducedMotion() || !outgoing.animate) {
-      releaseCanvas(outgoing);
-      return;
-    }
-    // Следующий PDF уже отрисован. Поворачиваем лист без раннего растворения текста.
-    const moving = direction > 0 ? outgoing : incoming;
-    const resting = direction > 0 ? incoming : outgoing;
-    resting.style.zIndex = '1';
-    moving.style.zIndex = '2';
-    const frames = [
-      { transform: 'rotateY(0deg)', opacity: 1, boxShadow: '0 0 0 rgba(0,0,0,0)', offset: 0 },
-      { transform: 'rotateY(-24deg)', opacity: 1, boxShadow: '12px 4px 18px rgba(0,0,0,.12)', offset: .38 },
-      { transform: 'rotateY(-68deg)', opacity: 1, boxShadow: '22px 5px 24px rgba(0,0,0,.16)', offset: .78 },
-      { transform: 'rotateY(-89.5deg)', opacity: 0, boxShadow: '0 0 0 rgba(0,0,0,0)', offset: 1 }
-    ];
-    const animation = moving.animate(frames, {
-      duration: window.matchMedia('(max-width: 700px)').matches ? 580 : 760,
-      easing: 'cubic-bezier(.25,.1,.2,1)',
-      direction: direction > 0 ? 'normal' : 'reverse',
-      fill: 'both'
-    });
-    try {
-      await animation.finished;
-    } catch (error) {
-      // Закрытие книги отменяет переход; старый переход не меняет новый модуль.
-    } finally {
-      if (token === loadToken) {
-        releaseCanvas(outgoing);
-        incoming.style.zIndex = '';
-      }
-      animation.cancel();
-    }
+  function cancelWork() {
+    loadToken++;
+    clearTimeout(warmTimer);
+    clearTimeout(resizeTimer);
+    if (stopAnimation) stopAnimation();
+    renderTasks.forEach((task) => task.cancel());
+    renderTasks.clear(); cache.clear();
+    if (loadingTask) Promise.resolve(loadingTask.destroy()).catch(() => {});
+    loadingTask = null; pdfDocument = null;
+    busy = false; resizePending = false;
   }
-  // Показывает страницу target. direction: 1 вперёд, -1 назад, 0 без анимации (первая загрузка, изменение размера).
-  async function goTo(target, direction) {
+
+  // PDF.js работает только с отдельными canvas. Старый запрос не может изменить видимый лист.
+  function preparePage(target, nextZoom) {
+    const key = `${loadToken}:${layoutVersion}:${nextZoom}:${target}`;
+    if (cache.has(key)) return cache.get(key);
     const doc = pdfDocument;
-    if (!doc || busy || target < 1 || target > doc.numPages) return;
     const token = loadToken;
+    const version = layoutVersion;
+    const width = Math.max(1, stage.clientWidth);
+    // При увеличении высота stage ограничивает прокрутку, а не исходный масштаб PDF.
+    const height = compact() ? Infinity : Math.max(180, stage.clientHeight - 24);
+    const promise = (async () => {
+      const page = await doc.getPage(target);
+      if (token !== loadToken || version !== layoutVersion) return null;
+      const base = page.getViewport({ scale: 1 });
+      const size = motion.fit(base.width, base.height, width, height, zoomLevels[nextZoom], window.devicePixelRatio);
+      const canvas = document.createElement('canvas');
+      canvas.width = size.pixelWidth; canvas.height = size.pixelHeight;
+      const task = page.render({
+        canvasContext: canvas.getContext('2d', { alpha: false }),
+        viewport: page.getViewport({ scale: size.scale }),
+        transform: [size.ratio, 0, 0, size.ratio, 0, 0],
+      });
+      renderTasks.add(task);
+      try { await task.promise; }
+      finally { renderTasks.delete(task); }
+      return token === loadToken && version === layoutVersion ? { canvas, size } : null;
+    })();
+    cache.set(key, promise);
+    // Текущий и соседние листы; никогда не храним весь PDF в растровом виде.
+    while (cache.size > 3) cache.delete(cache.keys().next().value);
+    promise.catch(() => { if (cache.get(key) === promise) cache.delete(key); });
+    return promise;
+  }
+  function warmNext() {
+    clearTimeout(warmTimer);
+    warmTimer = setTimeout(() => {
+      if (!pdfDocument || busy || document.hidden) return;
+      const target = pageNumber < total() ? pageNumber + 1 : pageNumber - 1;
+      if (target >= 1) preparePage(target, zoomIndex).catch(() => {});
+    }, 100);
+  }
+  function mountPage(rendered, canvas) {
+    const { size } = rendered;
+    canvas.width = rendered.canvas.width; canvas.height = rendered.canvas.height;
+    canvas.getContext('2d', { alpha: false }).drawImage(rendered.canvas, 0, 0);
+    canvas.style.width = size.width + 'px'; canvas.style.height = size.height + 'px';
+    sheet.style.width = size.width + 'px'; sheet.style.height = size.height + 'px';
+  }
+
+  function flip(direction) {
+    if (!direction || motionPreference.matches || zoomIndex > 0 || document.hidden) return Promise.resolve(true);
+    const width = parseFloat(back.style.width);
+    const height = parseFloat(back.style.height);
+    // У эффекта отдельный небольшой буфер. Финальный лист всегда остаётся чётким.
+    const density = Math.min(window.devicePixelRatio || 1, 1.5, 1600 / Math.max(width, height));
+    effect.width = Math.max(1, Math.floor(width * density));
+    effect.height = Math.max(1, Math.floor(height * density));
+    effect.style.width = width + 'px'; effect.style.height = height + 'px';
+    const context = effect.getContext('2d', { alpha: false });
+    context.setTransform(density, 0, 0, density, 0, 0);
+    const source = direction > 0 ? front : back;
+    const target = direction > 0 ? back : front;
+    const duration = compact() ? 620 : 760;
+    return new Promise((resolve) => {
+      let frameId;
+      let start;
+      const finish = (complete) => {
+        cancelAnimationFrame(frameId);
+        clearCanvas(effect);
+        stopAnimation = null;
+        resolve(complete);
+      };
+      stopAnimation = () => finish(false);
+      // Рисуем первый кадр до показа слоя, чтобы не было белой вспышки.
+      motion.draw(context, source, target, width, height, direction > 0 ? 0 : 1);
+      effect.hidden = false;
+      const frame = (time) => {
+        start ??= time;
+        const t = Math.min(1, (time - start) / duration);
+        const eased = t * t * t * (10 + t * (-15 + 6 * t));
+        motion.draw(context, source, target, width, height, direction > 0 ? eased : 1 - eased);
+        if (t < 1 && !document.hidden && !motionPreference.matches) frameId = requestAnimationFrame(frame);
+        else finish(true);
+      };
+      frameId = requestAnimationFrame(frame);
+    });
+  }
+  async function goTo(target, direction = 0, nextZoom = zoomIndex) {
+    if (!pdfDocument || busy || target < 1 || target > total()) return;
+    const token = loadToken;
+    const version = layoutVersion;
+    lastRequest = { target, direction, nextZoom };
     busy = true; updateControls();
+    let succeeded = false;
     try {
-      await drawPage(back, target, doc);
-      if (token !== loadToken) return;
-      await flip(direction);
-      if (token !== loadToken) return;
+      const rendered = await preparePage(target, nextZoom);
+      if (!rendered || token !== loadToken || version !== layoutVersion) return;
+      const sameSize = front.width > 1 && front.style.width === rendered.size.width + 'px' && front.style.height === rendered.size.height + 'px';
+      mountPage(rendered, back);
+      const complete = await flip(sameSize ? direction : 0);
+      if (!complete || token !== loadToken) return;
+      clearCanvas(front);
+      back.hidden = false;
       [front, back] = [back, front];
-      back.style.zIndex = ''; front.style.zIndex = '';
-      front.removeAttribute('aria-hidden');
-      front.setAttribute('aria-label', 'Страница ' + target);
+      front.removeAttribute('aria-hidden'); front.setAttribute('aria-label', 'Страница ' + target);
       back.setAttribute('aria-hidden', 'true');
-      pdfPageNumber = target;
+      const zoomChanged = zoomIndex !== nextZoom;
+      zoomIndex = nextZoom; pageNumber = target;
+      stage.classList.toggle('is-zoomed', zoomIndex > 0);
+      if (zoomChanged) { stage.scrollLeft = 0; stage.scrollTop = 0; }
       if (active) { state.pages[active.slug] = target; save(); }
-      setStatus('', false);
+      setStatus(''); succeeded = true;
     } catch (error) {
-      if (token !== loadToken) return;
-      back.hidden = true;
-      setStatus(front.hidden ? 'Не удалось показать страницу.' : 'Не удалось загрузить страницу. Попробуйте перелистнуть ещё раз.', true);
+      if (token === loadToken && version === layoutVersion) setStatus('Не удалось показать страницу. Повторите попытку.', true);
     } finally {
       if (token === loadToken) {
         busy = false; updateControls();
-        if (resizePending) { resizePending = false; goTo(pdfPageNumber, 0); }
+        if (resizePending) { resizePending = false; goTo(pageNumber); }
+        else if (succeeded) warmNext();
       }
     }
   }
   async function loadBook(url) {
-    currentUrl = url;
-    loadToken += 1;
+    cancelWork();
     const token = loadToken;
-    if (pdfDocument && pdfDocument.destroy) { try { pdfDocument.destroy(); } catch (error) { /* не критично */ } }
-    pdfDocument = null; pdfPageNumber = 1; busy = true; resizePending = false;
-    zoomIndex = 0;
-    stage.classList.remove('is-zoomed');
-    sheet.classList.remove('is-zoomed');
-    sheet.style.width = '';
-    sheet.style.height = '';
-    releaseCanvas(front); releaseCanvas(back);
-    updateControls();
-    setStatus('Открываем материал…', false);
-    if (!window.pdfjsLib) {
-      busy = false; updateControls();
-      setStatus('Просмотрщик не загрузился. Проверьте подключение к интернету: библиотека загружается с CDN.', true);
-      return;
+    currentUrl = url; lastRequest = null; pageNumber = 1; zoomIndex = 0;
+    stage.classList.remove('is-zoomed'); stage.scrollLeft = stage.scrollTop = 0;
+    sheet.style.width = ''; sheet.style.height = '';
+    clearCanvas(front); clearCanvas(back);
+    busy = true; updateControls(); setStatus('Открываем материал…');
+    if (!window.pdfjsLib || !motion) {
+      busy = false; updateControls(); setStatus('Просмотрщик не загрузился. Проверьте интернет и обновите страницу.', true); return;
     }
     window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
     try {
-      const doc = await window.pdfjsLib.getDocument({ url }).promise;
-      if (token !== loadToken) { try { doc.destroy(); } catch (error) { /* не критично */ } return; }
-      pdfDocument = doc;
-      busy = false;
-      const saved = Number(state.pages[active ? active.slug : '']) || 1;
-      await goTo(Math.min(Math.max(1, saved), doc.numPages), 0);
-    } catch (error) {
+      loadingTask = window.pdfjsLib.getDocument({ url });
+      const doc = await loadingTask.promise;
       if (token !== loadToken) return;
-      pdfDocument = null; busy = false; updateControls();
-      setStatus('Не удалось открыть PDF. Обновите страницу и попробуйте снова.', true);
+      pdfDocument = doc; busy = false;
+      const saved = Number(state.pages[active.slug]);
+      await goTo(Number.isInteger(saved) ? Math.min(Math.max(1, saved), doc.numPages) : 1);
+    } catch (_) {
+      if (token !== loadToken) return;
+      busy = false; pdfDocument = null; updateControls();
+      setStatus('Не удалось открыть материал. Проверьте доступ к курсу и повторите попытку.', true);
     }
   }
-  function setZoom(nextIndex) {
-    if (!pdfDocument || busy || nextIndex < 0 || nextIndex >= zoomLevels.length || nextIndex === zoomIndex) return;
-    zoomIndex = nextIndex;
-    goTo(pdfPageNumber, 0);
-  }
-  byId('bookZoomOut').addEventListener('click', () => setZoom(zoomIndex - 1));
-  byId('bookZoomIn').addEventListener('click', () => setZoom(zoomIndex + 1));
-  function turnPage(direction) { goTo(pdfPageNumber + direction, direction); }
+  function turnPage(direction) { goTo(pageNumber + direction, direction); }
   byId('bookPrev').addEventListener('click', () => turnPage(-1));
   byId('bookNext').addEventListener('click', () => turnPage(1));
+  for (const [id, delta] of [['bookZoomOut', -1], ['bookZoomIn', 1]]) byId(id).addEventListener('click', () => {
+    const next = zoomIndex + delta;
+    if (next >= 0 && next < zoomLevels.length) goTo(pageNumber, 0, next);
+  });
   byId('bookRetry').addEventListener('click', () => {
     if (!pdfDocument) loadBook(currentUrl);
-    else goTo(pdfPageNumber, 0);
+    else if (lastRequest) goTo(lastRequest.target, lastRequest.direction, lastRequest.nextZoom);
   });
   document.addEventListener('keydown', (event) => {
-    if (byId('courseReader').hidden) return;
-    const tag = (event.target && event.target.tagName || '').toLowerCase();
-    if (tag === 'textarea' || tag === 'input') return;
-    if (event.key === 'ArrowRight' || event.key === 'PageDown') { event.preventDefault(); turnPage(1); }
-    else if (event.key === 'ArrowLeft' || event.key === 'PageUp') { event.preventDefault(); turnPage(-1); }
-    else if (event.key === 'Escape') { event.preventDefault(); byId('backToModules').click(); }
+    if (reader.hidden || event.ctrlKey || event.altKey || event.metaKey || event.target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(event.target.tagName)) return;
+    if (['ArrowRight', 'PageDown'].includes(event.key)) { event.preventDefault(); turnPage(1); }
+    else if (['ArrowLeft', 'PageUp'].includes(event.key)) { event.preventDefault(); turnPage(-1); }
+    else if (event.key === 'Escape') byId('backToModules').click();
   });
   let touchStart = null;
-  stage.addEventListener('touchstart', (event) => { const t = event.changedTouches[0]; touchStart = { x: t.clientX, y: t.clientY }; }, { passive: true });
+  stage.addEventListener('touchstart', (event) => {
+    touchStart = !busy && zoomIndex === 0 && event.touches.length === 1 ? { x: event.touches[0].clientX, y: event.touches[0].clientY } : null;
+  }, { passive: true });
+  stage.addEventListener('touchmove', (event) => { if (event.touches.length !== 1) touchStart = null; }, { passive: true });
+  stage.addEventListener('touchcancel', () => { touchStart = null; }, { passive: true });
   stage.addEventListener('touchend', (event) => {
     if (!touchStart) return;
-    const t = event.changedTouches[0]; const dx = t.clientX - touchStart.x; const dy = t.clientY - touchStart.y; touchStart = null;
-    // При увеличении жест двигает страницу; при обычном масштабе перелистывает её.
-    if (zoomIndex > 0) return;
-    if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5) turnPage(dx < 0 ? 1 : -1);
+    const dx = event.changedTouches[0].clientX - touchStart.x;
+    const dy = event.changedTouches[0].clientY - touchStart.y;
+    touchStart = null;
+    if (zoomIndex === 0 && Math.abs(dx) > 45 && Math.abs(dx) > Math.abs(dy) * 1.6) turnPage(dx < 0 ? 1 : -1);
   }, { passive: true });
-  let resizeTimer;
-  window.addEventListener('resize', () => {
+  function scheduleResize() {
     clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(() => { if (!pdfDocument) return; if (busy) resizePending = true; else goTo(pdfPageNumber, 0); }, 180);
-  });
-  function closeReader() {
+    resizeTimer = setTimeout(() => {
+      if (!pdfDocument) return;
+      layoutVersion++; cache.clear();
+      if (busy) resizePending = true;
+      else goTo(pageNumber);
+    }, 160);
+  }
+  window.addEventListener('resize', scheduleResize);
+  // Шапка может стать выше при переносе заголовка или увеличении текста.
+  if (window.ResizeObserver) new ResizeObserver(() => {
+    reader.style.setProperty('--reader-bar-height', byId('readerBar').offsetHeight + 'px');
+    scheduleResize();
+  }).observe(byId('readerBar'));
+
+  function saveNotes() {
     if (active) state.notes[active.slug] = byId('courseNotes').value;
     clearTimeout(noteTimer);
-    save();
-    loadToken += 1; busy = false; resizePending = false;
-    if (pdfDocument && pdfDocument.destroy) { try { pdfDocument.destroy(); } catch (error) { /* не критично */ } }
-    pdfDocument = null;
-    releaseCanvas(front); releaseCanvas(back);
-    byId('courseReader').hidden = true; byId('courseReader').classList.remove('is-reading');
+    setText('notesSaveStatus', save() ? 'Сохранено в этом браузере' : 'Браузер не сохранил заметку. Скопируйте текст.');
+  }
+  function closeReader() {
+    saveNotes(); cancelWork(); active = null;
+    clearCanvas(front); clearCanvas(back);
+    reader.hidden = true; reader.classList.remove('is-reading');
     document.body.classList.remove('course-book-open');
     byId('courseLibrary').hidden = false; byId('courseFinalProgress').hidden = false;
   }
-
-  let lastTrigger = null;
   function openModule(slug) {
-    const module = modules.find((item) => item.slug === slug) || modules[0];
-    const reader = byId('courseReader');
+    const module = modules.find((item) => item.slug === slug);
+    if (!module) return;
     if (reader.hidden) { libraryScrollY = window.scrollY; lastTrigger = document.activeElement; }
+    else saveNotes();
     active = module; state.last = module.slug;
     if (!state.started.includes(module.slug) && !isDone(module.slug)) state.started.push(module.slug);
-    save(); renderProgress(); renderNav();
+    save(); renderProgress();
     byId('courseLibrary').hidden = true; byId('courseFinalProgress').hidden = true;
     reader.hidden = false; reader.classList.add('is-reading'); document.body.classList.add('course-book-open');
     reader.scrollTop = 0;
     setText('readerTitle', module.title.toLocaleUpperCase('ru-RU'));
     setText('pdfModuleLabel', 'Модуль ' + module.number);
-    byId('courseNotes').value = state.notes[module.slug] || '';
-    byId('markModuleDone').textContent = isDone(module.slug) ? 'Модуль изучен ✓' : 'Отметить модуль изученным';
+    byId('courseNotes').value = typeof state.notes[module.slug] === 'string' ? state.notes[module.slug] : '';
+    setText('notesSaveStatus', 'Заметки сохраняются в этом браузере');
+    setText('markModuleDone', isDone(module.slug) ? 'Модуль изучен ✓' : 'Отметить модуль изученным');
     byId('markModuleDone').classList.toggle('is-complete', isDone(module.slug));
-    byId('nextModule').textContent = module.slug === modules[modules.length - 1].slug ? 'К прогрессу ↓' : 'Следующий модуль →';
+    setText('nextModule', module.slug === modules[modules.length - 1].slug ? 'К прогрессу ↓' : 'Следующий модуль →');
+    reader.style.setProperty('--reader-bar-height', byId('readerBar').offsetHeight + 'px');
     loadBook('course-materials/' + encodeURIComponent(module.slug) + '.pdf');
     byId('backToModules').focus({ preventScroll: true });
   }
   document.querySelectorAll('[data-module-card]').forEach((card) => {
-    const activate = () => openModule(card.dataset.moduleCard);
-    card.addEventListener('click', activate);
-    card.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); activate(); } });
+    card.addEventListener('click', () => openModule(card.dataset.moduleCard));
+    card.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openModule(card.dataset.moduleCard); }
+    });
   });
-  const readerNavEl = byId('readerNav');
-  if (readerNavEl) readerNavEl.addEventListener('click', (event) => { const button = event.target.closest('[data-open-module]'); if (button) openModule(button.dataset.openModule); });
-  byId('continueCourse').addEventListener('click', () => { const unfinished = modules.find((m) => !isDone(m.slug)); openModule(state.last || (unfinished && unfinished.slug) || modules[0].slug); });
+  byId('continueCourse').addEventListener('click', () => openModule(state.last));
   byId('backToModules').addEventListener('click', () => {
     closeReader();
-    window.scrollTo({ top: libraryScrollY, left: 0, behavior: 'auto' });
-    if (lastTrigger && document.contains(lastTrigger) && lastTrigger.focus) lastTrigger.focus({ preventScroll: true });
+    // Не зависим от глобального smooth scroll при восстановлении списка.
+    const previous = document.documentElement.style.scrollBehavior;
+    document.documentElement.style.scrollBehavior = 'auto';
+    window.scrollTo(0, libraryScrollY);
+    document.documentElement.style.scrollBehavior = previous;
+    if (lastTrigger && document.contains(lastTrigger)) lastTrigger.focus({ preventScroll: true });
   });
   byId('courseNotes').addEventListener('input', () => {
     if (!active) return;
     state.notes[active.slug] = byId('courseNotes').value;
-    byId('notesSaveStatus').textContent = 'Сохраняем…';
-    clearTimeout(noteTimer);
-    noteTimer = setTimeout(() => { save(); byId('notesSaveStatus').textContent = 'Сохранено в этом браузере'; }, 250);
+    setText('notesSaveStatus', 'Сохраняем…'); clearTimeout(noteTimer);
+    noteTimer = setTimeout(saveNotes, 250);
   });
   byId('markModuleDone').addEventListener('click', () => {
     if (!active) return;
     if (!isDone(active.slug)) state.completed.push(active.slug);
-    state.completed = [...new Set(state.completed)]; save(); renderProgress(); renderNav();
-    byId('markModuleDone').textContent = 'Модуль изучен ✓'; byId('markModuleDone').classList.add('is-complete');
+    save(); renderProgress(); setText('markModuleDone', 'Модуль изучен ✓');
+    byId('markModuleDone').classList.add('is-complete');
   });
   byId('nextModule').addEventListener('click', () => {
     if (!active) return;
-    const index = modules.findIndex((m) => m.slug === active.slug);
-    if (index < modules.length - 1) openModule(modules[index + 1].slug);
-    else { closeReader(); byId('courseFinalProgress').scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+    const next = modules[modules.findIndex((module) => module.slug === active.slug) + 1];
+    if (next) openModule(next.slug);
+    else { closeReader(); byId('courseFinalProgress').scrollIntoView({ behavior: motionPreference.matches ? 'auto' : 'smooth', block: 'start' }); }
   });
-  // Сохраняем последний лист и заметки и при быстром закрытии вкладки.
-  const saveBeforeLeave = () => {
-    if (active) state.notes[active.slug] = byId('courseNotes').value;
-    clearTimeout(noteTimer);
-    save();
-  };
-  window.addEventListener('pagehide', saveBeforeLeave);
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') saveBeforeLeave(); });
+  window.addEventListener('pagehide', () => { saveNotes(); if (stopAnimation) stopAnimation(); });
+  document.addEventListener('visibilitychange', () => { if (document.hidden) saveNotes(); });
   renderProgress();
 })();
